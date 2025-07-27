@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-redis
+redis[hiredis]
 pydantic
 httpx
 loguru

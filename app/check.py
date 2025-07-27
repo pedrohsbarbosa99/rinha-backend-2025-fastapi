@@ -33,6 +33,7 @@ def set_url_checked():
                             {
                                 "url": settings.PROCESSOR_DEFAULT_URL,
                                 "processor": "default",
+                                "fail": failing_default,
                             }
                         ),
                     )
@@ -53,6 +54,7 @@ def set_url_checked():
                                 {
                                     "url": settings.PROCESSOR_DEFAULT_URL,
                                     "processor": "default",
+                                    "fail": failing_default,
                                 }
                             ),
                         )
@@ -66,6 +68,7 @@ def set_url_checked():
                                 {
                                     "url": settings.PROCESSOR_FALLBACK_URL,
                                     "processor": "fallback",
+                                    "fail": failing_fallback,
                                 }
                             ),
                         )
@@ -76,7 +79,13 @@ def set_url_checked():
 if __name__ == "__main__":
     redis_client.set(
         "checked",
-        json.dumps({"url": settings.PROCESSOR_DEFAULT_URL, "processor": "default"}),
+        json.dumps(
+            {
+                "url": settings.PROCESSOR_DEFAULT_URL,
+                "processor": "default",
+                "fail": False,
+            }
+        ),
     )
 
     set_url_checked()

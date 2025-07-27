@@ -6,51 +6,34 @@ import orjson
 import redis.asyncio as redis
 from app.config import settings
 
-redis_client = redis.Redis(host=settings.REDIS_HOST, decode_responses=False)
+redis_client = redis.Redis(
+    host=settings.REDIS_HOST,
+    decode_responses=False,
+)
 
-CACHED_DATA = None
+CACHE_DATA = None
 CACHE_TIMESTAMP = None
-CACHE_TTL = 5
-
+CACHE_TTL = 4
 queue = asyncio.Queue(maxsize=50000)
+semaphore = asyncio.Semaphore(10)
 
 
 async def get_config_data():
-    global CACHED_DATA, CACHE_TIMESTAMP
-
-    now = datetime.now()
-
-    if CACHED_DATA and CACHE_TIMESTAMP and (now - CACHE_TIMESTAMP).seconds < CACHE_TTL:
-        return CACHED_DATA
+    global CACHE_DATA, CACHE_TIMESTAMP
+    if CACHE_DATA and (
+        CACHE_TIMESTAMP and (datetime.now() - CACHE_TIMESTAMP).seconds < CACHE_TTL
+    ):
+        return CACHE_DATA
 
     raw = await redis_client.get("checked")
     if raw:
-        CACHED_DATA = orjson.loads(raw)
+        CACHE_DATA = orjson.loads(raw)
 
-    CACHE_TIMESTAMP = now
-    return CACHED_DATA or {}
+    return CACHE_DATA
 
 
 async def add_to_queue(correlation_id, amount):
     await queue.put({"correlationId": correlation_id, "amount": amount})
-
-
-async def process_payment_immediate(payload):
-    processor, requested_at, ok = await post_payment(payload)
-
-    if ok:
-        timestamp = requested_at.timestamp()
-        entry = orjson.dumps(
-            {
-                "cid": payload["correlationId"],
-                "amount": payload["amount"],
-                "processor": processor,
-                "requested_at": timestamp,
-            }
-        )
-        await redis_client.zadd("processed", {entry: timestamp})
-    else:
-        await redis_client.rpush("payments_failure", orjson.dumps(payload))
 
 
 http_client = None
@@ -65,47 +48,65 @@ async def get_http_client():
     return http_client
 
 
-async def post_payment(payload):
-    processor = ""
-    data = await get_config_data()
-
+async def post_payment(payload, url, processor, requested_at):
     client = await get_http_client()
 
-    requested_at = datetime.now(tz=timezone.utc)
     iso_format = requested_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     payload["requestedAt"] = iso_format
 
     try:
         res = await client.post(
-            f"{data['url']}/payments",
+            f"{url}/payments",
             json=payload,
         )
         if 200 <= res.status_code < 300:
-            return data["processor"], requested_at, True
+            return processor, True
     except Exception:
         pass
-    return processor, requested_at, False
+    return processor, False
+
+
+async def _process_payment(payload, url, processor):
+    async with semaphore:
+        return await process_payment(payload, url, processor)
 
 
 async def worker():
     while True:
-        payload = await queue.get()
-        await process_payment(payload)
+        data = await get_config_data()
+        if not data:
+            continue
+        if data.get("fail", False):
+            await asyncio.sleep(0.7)
+
+        tasks = []
+        for _ in range(40):
+            payload = await queue.get()
+            tasks.append(
+                _process_payment(
+                    payload,
+                    data["url"],
+                    data["processor"],
+                )
+            )
+        asyncio.gather(*tasks)
 
 
-async def process_payment(payload):
-    processor, requested_at, ok = await post_payment(payload)
+async def process_payment(payload, url, processor):
+    requested_at = datetime.now(tz=timezone.utc)
+    timestamp = requested_at.timestamp()
+    entry = orjson.dumps(
+        {
+            "cid": payload["correlationId"],
+            "amount": payload["amount"],
+            "processor": processor,
+            "requested_at": timestamp,
+        }
+    ).decode()
+
+    processor, ok = await post_payment(payload, url, processor, requested_at)
 
     if ok:
-        timestamp = requested_at.timestamp()
-        entry = orjson.dumps(
-            {
-                "cid": payload["correlationId"],
-                "amount": payload["amount"],
-                "processor": processor,
-                "requested_at": timestamp,
-            }
-        )
         await redis_client.zadd("processed", {entry: timestamp})
     else:
         await add_to_queue(payload["correlationId"], payload["amount"])
