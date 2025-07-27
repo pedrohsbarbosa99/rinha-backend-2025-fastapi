@@ -26,7 +26,7 @@ def set_url_checked():
             default_result = check_health(client, settings.PROCESSOR_DEFAULT_URL)
             if default_result:
                 failing_default, res_time_default = default_result
-                if not failing_default and res_time_default < 100:
+                if not failing_default and res_time_default < 130:
                     redis_client.set(
                         "checked",
                         json.dumps(
@@ -40,9 +40,26 @@ def set_url_checked():
                     continue
 
                 fallback_result = check_health(client, settings.PROCESSOR_FALLBACK_URL)
+
                 if fallback_result:
                     failing_fallback, res_time_fallback = fallback_result
-                    if not failing_fallback and res_time_fallback < 100:
+                    if failing_fallback or (
+                        not failing_default
+                        and res_time_default > res_time_fallback * 1.3
+                    ):
+                        redis_client.set(
+                            "checked",
+                            json.dumps(
+                                {
+                                    "url": settings.PROCESSOR_DEFAULT_URL,
+                                    "processor": "default",
+                                }
+                            ),
+                        )
+                        time.sleep(5)
+                        continue
+
+                    if not failing_fallback and res_time_fallback < 90:
                         redis_client.set(
                             "checked",
                             json.dumps(

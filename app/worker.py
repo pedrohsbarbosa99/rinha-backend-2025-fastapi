@@ -1,8 +1,8 @@
 import asyncio
-import json
 from datetime import datetime, timezone
 
 import httpx
+import orjson
 import redis.asyncio as redis
 from app.config import settings
 
@@ -10,7 +10,7 @@ redis_client = redis.Redis(host=settings.REDIS_HOST, decode_responses=False)
 
 CACHED_DATA = None
 CACHE_TIMESTAMP = None
-CACHE_TTL = 60
+CACHE_TTL = 2
 
 queue = asyncio.Queue(maxsize=50000)
 
@@ -23,18 +23,12 @@ async def get_config_data():
     if CACHED_DATA and CACHE_TIMESTAMP and (now - CACHE_TIMESTAMP).seconds < CACHE_TTL:
         return CACHED_DATA
 
-    data = {}
     raw = await redis_client.get("checked")
     if raw:
-        data = json.loads(raw)
-
-    if not data:
-        CACHED_DATA = {"url": settings.PROCESSOR_DEFAULT_URL, "processor": "default"}
-    else:
-        CACHED_DATA = data
+        CACHED_DATA = orjson.loads(raw)
 
     CACHE_TIMESTAMP = now
-    return CACHED_DATA
+    return CACHED_DATA or {}
 
 
 async def add_to_queue(correlation_id, amount):
@@ -51,7 +45,7 @@ async def process_payment_immediate(payload):
 
     if ok:
         timestamp = requested_at.timestamp()
-        entry = json.dumps(
+        entry = orjson.dumps(
             {
                 "cid": payload["correlationId"],
                 "amount": payload["amount"],
@@ -61,7 +55,7 @@ async def process_payment_immediate(payload):
         )
         await redis_client.zadd("processed", {entry: timestamp})
     else:
-        await redis_client.rpush("payments_failure", json.dumps(payload))
+        await redis_client.rpush("payments_failure", orjson.dumps(payload))
 
 
 http_client = None
@@ -77,14 +71,14 @@ async def get_http_client():
 
 
 async def post_payment(payload, retry_count=0):
-    requested_at = datetime.now(tz=timezone.utc)
     processor = ""
     data = await get_config_data()
 
-    if not data.get("url"):
-        return processor, requested_at, False
-
     client = await get_http_client()
+
+    requested_at = datetime.now(tz=timezone.utc)
+    iso_format = requested_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    payload["requestedAt"] = iso_format
 
     try:
         res = await client.post(
@@ -94,15 +88,14 @@ async def post_payment(payload, retry_count=0):
         if 200 <= res.status_code < 300:
             return data["processor"], requested_at, True
     except Exception:
-        if retry_count < 1:
-            await asyncio.sleep(0.05)
+        if retry_count < 2:
             return await post_payment(payload, retry_count + 1)
         pass
     return processor, requested_at, False
 
 
 async def worker():
-    batch_size = 35
+    batch_size = 5
     batch = []
 
     while True:
@@ -140,7 +133,7 @@ async def process_payment_with_redis(payload):
 
     if ok:
         timestamp = requested_at.timestamp()
-        entry = json.dumps(
+        entry = orjson.dumps(
             {
                 "cid": payload["correlationId"],
                 "amount": payload["amount"],
@@ -150,9 +143,9 @@ async def process_payment_with_redis(payload):
         )
         await redis_client.zadd("processed", {entry: timestamp})
     else:
-        await redis_client.rpush("payments_failure", json.dumps(payload))
+        await add_to_queue(payload["correlationId"], payload["amount"])
 
 
 async def worker_main():
-    worker_count = 10
+    worker_count = 8
     await asyncio.gather(*[worker() for _ in range(worker_count)])

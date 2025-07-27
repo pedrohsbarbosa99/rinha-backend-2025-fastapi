@@ -1,12 +1,13 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 import redis.asyncio as redis
 from app.config import settings
 from app.worker import add_to_queue, worker_main
 from fastapi import BackgroundTasks, FastAPI, Query
+from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel
 
 redis_client = redis.Redis(host=settings.REDIS_HOST, decode_responses=True)
@@ -23,7 +24,7 @@ async def lifespan(_: FastAPI):
         pass
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, default_response_class=ORJSONResponse)
 
 
 class PaymentRequest(BaseModel):
@@ -41,8 +42,8 @@ async def payments_summary(
     from_: datetime = Query(None, alias="from"),
     to: datetime = Query(None, alias="to"),
 ):
-    from_ts = from_.timestamp() if from_ else "-inf"
-    to_ts = to.timestamp() if from_ else "+inf"
+    from_ts = from_.astimezone(timezone.utc).timestamp() if from_ else "-inf"
+    to_ts = to.astimezone(timezone.utc).timestamp() if from_ else "+inf"
 
     results = await redis_client.zrangebyscore("processed", min=from_ts, max=to_ts)
 
@@ -58,6 +59,9 @@ async def payments_summary(
 
         if processor in data:
             data[processor]["totalRequests"] += 1
-            data[processor]["totalAmount"] += amount
+            data[processor]["totalAmount"] = round(
+                data[processor]["totalAmount"] + amount,
+                2,
+            )
 
     return data
