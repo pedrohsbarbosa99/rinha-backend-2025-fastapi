@@ -10,7 +10,7 @@ redis_client = redis.Redis(host=settings.REDIS_HOST, decode_responses=False)
 
 CACHED_DATA = None
 CACHE_TIMESTAMP = None
-CACHE_TTL = 2
+CACHE_TTL = 5
 
 queue = asyncio.Queue(maxsize=50000)
 
@@ -32,12 +32,7 @@ async def get_config_data():
 
 
 async def add_to_queue(correlation_id, amount):
-    try:
-        await queue.put({"correlationId": correlation_id, "amount": amount})
-    except asyncio.QueueFull:
-        await process_payment_immediate(
-            {"correlationId": correlation_id, "amount": amount}
-        )
+    await queue.put({"correlationId": correlation_id, "amount": amount})
 
 
 async def process_payment_immediate(payload):
@@ -70,7 +65,7 @@ async def get_http_client():
     return http_client
 
 
-async def post_payment(payload, retry_count=0):
+async def post_payment(payload):
     processor = ""
     data = await get_config_data()
 
@@ -88,47 +83,17 @@ async def post_payment(payload, retry_count=0):
         if 200 <= res.status_code < 300:
             return data["processor"], requested_at, True
     except Exception:
-        if retry_count < 2:
-            return await post_payment(payload, retry_count + 1)
         pass
     return processor, requested_at, False
 
 
 async def worker():
-    batch_size = 5
-    batch = []
-
     while True:
-        try:
-            while len(batch) < batch_size:
-                try:
-                    payload = await asyncio.wait_for(queue.get(), timeout=0.05)
-                    batch.append(payload)
-                except asyncio.TimeoutError:
-                    break
-
-            if not batch:
-                continue
-
-            tasks = []
-            for payload in batch:
-                task = asyncio.create_task(process_payment_with_redis(payload))
-                tasks.append(task)
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    await process_payment_with_redis(batch[i])
-
-            batch.clear()
-
-        except Exception as e:
-            print(f"Worker error: {e}")
-            continue
+        payload = await queue.get()
+        await process_payment(payload)
 
 
-async def process_payment_with_redis(payload):
+async def process_payment(payload):
     processor, requested_at, ok = await post_payment(payload)
 
     if ok:
@@ -147,5 +112,5 @@ async def process_payment_with_redis(payload):
 
 
 async def worker_main():
-    worker_count = 8
+    worker_count = 1
     await asyncio.gather(*[worker() for _ in range(worker_count)])
