@@ -7,4 +7,5 @@ loguru
 httptools
 uvloop
 orjson
+aioredis
 

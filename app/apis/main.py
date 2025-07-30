@@ -10,7 +10,11 @@ from fastapi import BackgroundTasks, FastAPI, Query
 from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel
 
-redis_client = redis.Redis(host=settings.REDIS_HOST, decode_responses=True)
+redis_client = redis.Redis(
+    host=settings.REDIS_HOST,
+    decode_responses=True,
+    max_connections=100,
+)
 
 
 @asynccontextmanager

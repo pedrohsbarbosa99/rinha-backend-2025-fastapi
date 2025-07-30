@@ -57,6 +57,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: redis-server --save "" --appendonly no --maxmemory 60mb --maxmemory-policy allkeys-lru --io-threads 2 --io-threads-do-reads yes
     deploy:
       resources:
         limits:
