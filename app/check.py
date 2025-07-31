@@ -38,8 +38,8 @@ async def set_url_checked():
                                 "processor": "default",
                                 "fail": failing_default,
                             },
-                            ex=10,
                         ),
+                        ex=10,
                     )
                     await asyncio.sleep(5)
                     continue
@@ -96,7 +96,6 @@ if __name__ == "__main__":
             ),
             ex=10,
         )
+        await set_url_checked()
 
     asyncio.run(main())
-
-    asyncio.run(set_url_checked())

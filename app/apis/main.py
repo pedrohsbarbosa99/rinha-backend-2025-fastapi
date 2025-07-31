@@ -1,18 +1,18 @@
 import asyncio
-import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 
+import orjson
 import redis.asyncio as redis
 from app.config import settings
 from app.worker import add_to_queue, worker_main
-from fastapi import BackgroundTasks, FastAPI, Query
+from fastapi import FastAPI, Query
 from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel
 
 redis_client = redis.Redis(
     host=settings.REDIS_HOST,
-    decode_responses=True,
+    decode_responses=False,
     max_connections=100,
 )
 
@@ -37,8 +37,8 @@ class PaymentRequest(BaseModel):
 
 
 @app.post("/payments")
-async def create_payment(payment: PaymentRequest, bg: BackgroundTasks):
-    bg.add_task(add_to_queue, payment.correlationId, payment.amount)
+async def create_payment(payment: PaymentRequest):
+    await add_to_queue(payment.correlationId, payment.amount)
 
 
 @app.get("/payments-summary")
@@ -46,8 +46,8 @@ async def payments_summary(
     from_: datetime = Query(None, alias="from"),
     to: datetime = Query(None, alias="to"),
 ):
-    from_ts = from_.astimezone(timezone.utc).timestamp() if from_ else "-inf"
-    to_ts = to.astimezone(timezone.utc).timestamp() if from_ else "+inf"
+    from_ts = from_.timestamp() if from_ else "-inf"
+    to_ts = to.timestamp() if to else "+inf"
 
     results = await redis_client.zrangebyscore("processed", min=from_ts, max=to_ts)
 
@@ -57,7 +57,7 @@ async def payments_summary(
     }
 
     for item in results:
-        result = json.loads(item)
+        result = orjson.loads(item)
         processor = result.get("processor")
         amount = float(result.get("amount", 0))
 

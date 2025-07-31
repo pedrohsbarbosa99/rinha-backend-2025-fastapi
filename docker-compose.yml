@@ -1,18 +1,4 @@
 services:
-  health-check:
-    build: .
-    command: python -m app.check
-    depends_on:
-      - redis
-    networks:
-      - backend
-      - payment-processor
-    deploy:
-      resources:
-        limits:
-          cpus: "0.1"
-          memory: "70M"
-
   api1:
     build: .
     command: uvicorn app.apis.main:app --host 0.0.0.0 --port 9999 --workers 1 --loop uvloop --http httptools
@@ -22,7 +8,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.6"
+          # cpus: "0.6"
           memory: "70M"
 
   api2:
@@ -34,7 +20,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.6"
+          # cpus: "0.6"
           memory: "70M"
 
   nginx:
@@ -61,7 +47,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.1"
+          cpus: "0.2"
           memory: "70M"
     networks:
       - backend
