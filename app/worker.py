@@ -4,13 +4,18 @@ from datetime import datetime, timezone
 import httpx
 import orjson
 import redis.asyncio as redis
+import uvloop
 from app.config import settings
 
 redis_client = redis.Redis(
     host=settings.REDIS_HOST,
     decode_responses=False,
-    max_connections=100,
+    max_connections=30,
 )
+
+
+asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+
 
 CACHE_DATA = {}
 CACHE_TIMESTAMP = None
@@ -31,21 +36,12 @@ async def add_to_queue(correlation_id, amount):
     await queue.put({"correlationId": correlation_id, "amount": amount})
 
 
-http_client = None
-
-
-async def get_http_client():
-    global http_client
-    if http_client is None:
-        timeout = httpx.Timeout(3.0, connect=1.0, read=2.0)
-        limits = httpx.Limits(max_keepalive_connections=10, max_connections=100)
-        http_client = httpx.AsyncClient(timeout=timeout, limits=limits)
-    return http_client
+timeout = httpx.Timeout(3.0, connect=1.0, read=2.0)
+limits = httpx.Limits(max_keepalive_connections=10, max_connections=100)
+client = httpx.AsyncClient(timeout=timeout, limits=limits)
 
 
 async def post_payment(payload, url, processor, requested_at):
-    client = await get_http_client()
-
     iso_format = requested_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     payload["requestedAt"] = iso_format
 
@@ -56,33 +52,34 @@ async def post_payment(payload, url, processor, requested_at):
         )
         if 200 <= res.status_code < 300:
             return processor, True
-        else:
-            await queue.put(payload)
     except Exception:
         pass
     return processor, False
 
 
-async def _process_payment(payload, url, processor):
-    async with semaphore:
-        return await process_payment(payload, url, processor)
-
-
 async def worker():
     while True:
         data = await get_config_data()
-        concurrency = 30
+        size = queue.qsize()
+        concurrency = 1
+        if size > 100:
+            concurrency = 10
+        elif size > 1000:
+            concurrency = 15
+        elif size > 1500:
+            concurrency = 29
 
         tasks = []
         for _ in range(concurrency):
             payload = await queue.get()
             tasks.append(
-                _process_payment(
+                process_payment(
                     payload,
                     data["url"],
                     data["processor"],
                 )
             )
+        print("SS", queue.qsize())
         await asyncio.gather(*tasks)
 
 
@@ -93,7 +90,7 @@ async def process_payment(payload, url, processor):
         {
             "cid": payload["correlationId"][:9],
             "amount": payload["amount"],
-            "processor": processor,
+            "processor": "default",
             "requested_at": timestamp,
         }
     )
@@ -103,7 +100,22 @@ async def process_payment(payload, url, processor):
     if ok:
         await redis_client.zadd("processed", {entry: timestamp})
     else:
-        await add_to_queue(payload["correlationId"], payload["amount"])
+        entry = orjson.dumps(
+            {
+                "cid": payload["correlationId"][:9],
+                "amount": payload["amount"],
+                "processor": "fallback",
+                "requested_at": timestamp,
+            }
+        )
+        processor, ok = await post_payment(
+            payload,
+            settings.PROCESSOR_FALLBACK_URL,
+            "fallback",
+            requested_at,
+        )
+        if ok:
+            await redis_client.zadd("processed", {entry: timestamp})
     return ok
 
 

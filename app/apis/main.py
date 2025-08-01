@@ -13,7 +13,7 @@ from pydantic import BaseModel
 redis_client = redis.Redis(
     host=settings.REDIS_HOST,
     decode_responses=False,
-    max_connections=100,
+    max_connections=10,
 )
 
 
